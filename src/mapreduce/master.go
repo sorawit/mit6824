@@ -3,12 +3,9 @@ package mapreduce
 import "container/list"
 import "fmt"
 
-
 type WorkerInfo struct {
 	address string
-	// You can add definitions here.
 }
-
 
 // Clean up all workers by sending a Shutdown RPC to each one of them Collect
 // the number of jobs each work has performed.
@@ -29,6 +26,42 @@ func (mr *MapReduce) KillWorkers() *list.List {
 }
 
 func (mr *MapReduce) RunMaster() *list.List {
-	// Your code here
+	worker := make(chan string)
+	go func() {
+		for w := range mr.registerChannel {
+			mr.Workers[w] = &WorkerInfo{w}
+			go func(w string) {
+				worker <- w
+			}(w)
+		}
+	}()
+	doJob := func(op JobType, nJobs, nOtherJobs int) {
+		active, done := make(chan int), make(chan bool)
+		go func() {
+			for i := 0; i < nJobs; i++ {
+				active <- i
+			}
+		}()
+		go func() {
+			for i := range active {
+				go func(i int) {
+					w := <-worker
+					var reply DoJobReply
+					ok := call(w, "Worker.DoJob", &DoJobArgs{mr.file, op, i, nOtherJobs}, &reply)
+					if ok == true {
+						done <- true
+					} else {
+						active <- i
+					}
+					worker <- w
+				}(i)
+			}
+		}()
+		for i := 0; i < nJobs; i++ {
+			<-done
+		}
+	}
+	doJob(Map, mr.nMap, mr.nReduce)
+	doJob(Reduce, mr.nReduce, mr.nMap)
 	return mr.KillWorkers()
 }

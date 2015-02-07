@@ -16,17 +16,83 @@ type ViewServer struct {
 	rpccount int32 // for testing
 	me       string
 
+	view    View
+	actions map[string]time.Time
+	ack     map[string]uint
+	rfc     bool // ready for change
+}
 
-	// Your declarations here.
+//
+// make a new view, effectively increase
+// viewNum and make rfc become false
+// not threadsafe. somebody needs to lock me!
+//
+func (vs *ViewServer) NewView() {
+	vs.view.Viewnum += 1
+	vs.rfc = false
+}
+
+//
+// add server s to the system
+// not threadsafe. somebody needs to lock me!
+//
+func (vs *ViewServer) AddServer(s string) {
+	vs.actions[s] = time.Now()
+	if vs.rfc {
+		if vs.view.Primary == "" {
+			vs.view.Primary = s
+			vs.NewView()
+		}
+		if vs.view.Primary != s && vs.view.Backup == "" {
+			vs.view.Backup = s
+			vs.NewView()
+		}
+	}
+}
+
+//
+// remove server s from the system
+// not threadsafe. somebody needs to lock me!
+//
+func (vs *ViewServer) RemoveServer(s string) {
+	pick := func() string {
+		for k, _ := range vs.actions {
+			if k != vs.view.Primary && k != vs.view.Backup {
+				return k
+			}
+		}
+		return ""
+	}
+	if vs.rfc {
+		p := pick()
+		if vs.view.Primary == s {
+			vs.view.Primary = vs.view.Backup
+			vs.view.Backup = p
+			vs.NewView()
+		} else if vs.view.Backup == s {
+			vs.view.Backup = p
+			vs.NewView()
+		}
+	}
+	delete(vs.ack, s)
+	delete(vs.actions, s)
 }
 
 //
 // server Ping RPC handler.
 //
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
-
-	// Your code here.
-
+	vs.mu.Lock()
+	if args.Viewnum < vs.ack[args.Me] {
+		vs.RemoveServer(args.Me)
+	}
+	vs.ack[args.Me] = args.Viewnum
+	if args.Me == vs.view.Primary && args.Viewnum == vs.view.Viewnum {
+		vs.rfc = true
+	}
+	vs.AddServer(args.Me)
+	reply.View = vs.view
+	vs.mu.Unlock()
 	return nil
 }
 
@@ -34,12 +100,11 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 // server Get() RPC handler.
 //
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
-
-	// Your code here.
-
+	vs.mu.Lock()
+	reply.View = vs.view
+	vs.mu.Unlock()
 	return nil
 }
-
 
 //
 // tick() is called once per PingInterval; it should notice
@@ -47,8 +112,13 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 // accordingly.
 //
 func (vs *ViewServer) tick() {
-
-	// Your code here.
+	vs.mu.Lock()
+	for k, v := range vs.actions {
+		if v.Add(PingInterval * DeadPings).Before(time.Now()) {
+			vs.RemoveServer(k)
+		}
+	}
+	vs.mu.Unlock()
 }
 
 //
@@ -69,7 +139,11 @@ func (vs *ViewServer) GetRPCCount() int32 {
 func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
-	// Your vs.* initializations here.
+
+	vs.view = View{0, "", ""}
+	vs.actions = make(map[string]time.Time)
+	vs.ack = make(map[string]uint)
+	vs.rfc = true
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()

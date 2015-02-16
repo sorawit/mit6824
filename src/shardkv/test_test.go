@@ -47,18 +47,18 @@ func (tc *tCluster) start1(gi int, si int, unreliable bool) {
 }
 
 func (tc *tCluster) cleanup() {
-	for i := 0; i < len(tc.masters); i++ {
-		if tc.masters[i] != nil {
-			tc.masters[i].Kill()
-		}
-	}
-
 	for gi := 0; gi < len(tc.groups); gi++ {
 		g := tc.groups[gi]
 		for si := 0; si < len(g.servers); si++ {
 			if g.servers[si] != nil {
 				g.servers[si].kill()
 			}
+		}
+	}
+
+	for i := 0; i < len(tc.masters); i++ {
+		if tc.masters[i] != nil {
+			tc.masters[i].Kill()
 		}
 	}
 }
@@ -119,7 +119,7 @@ func setup(t *testing.T, tag string, unreliable bool) *tCluster {
 }
 
 func TestBasic(t *testing.T) {
-	tc := setup(t, "basicpersistence", false)
+	tc := setup(t, "basic", false)
 	defer tc.cleanup()
 
 	fmt.Printf("Test: Basic Join/Leave ...\n")
@@ -129,10 +129,7 @@ func TestBasic(t *testing.T) {
 	ck := tc.clerk()
 
 	ck.Put("a", "x")
-	v := ck.Append("a", "b")
-	if v != "x" {
-		t.Fatalf("Puthash got wrong value")
-	}
+	ck.Append("a", "b")
 	if ck.Get("a") != "xb" {
 		t.Fatalf("Get got wrong value")
 	}
@@ -179,7 +176,7 @@ func TestBasic(t *testing.T) {
 }
 
 func TestMove(t *testing.T) {
-	tc := setup(t, "basicpersistence", false)
+	tc := setup(t, "move", false)
 	defer tc.cleanup()
 
 	fmt.Printf("Test: Shards really move ...\n")
@@ -236,7 +233,7 @@ func TestMove(t *testing.T) {
 }
 
 func TestLimp(t *testing.T) {
-	tc := setup(t, "basicpersistence", false)
+	tc := setup(t, "limp", false)
 	defer tc.cleanup()
 
 	fmt.Printf("Test: Reconfiguration with some dead replicas ...\n")
@@ -303,7 +300,7 @@ func TestLimp(t *testing.T) {
 }
 
 func doConcurrent(t *testing.T, unreliable bool) {
-	tc := setup(t, "basicpersistence", false)
+	tc := setup(t, "concurrent-"+strconv.FormatBool(unreliable), false)
 	defer tc.cleanup()
 
 	for i := 0; i < len(tc.groups); i++ {
@@ -323,13 +320,9 @@ func doConcurrent(t *testing.T, unreliable bool) {
 			last := ""
 			for iters := 0; iters < 3; iters++ {
 				nv := strconv.Itoa(rand.Int())
-				v := ck.Append(key, nv)
-				if v != last {
-					ok = false
-					t.Fatalf("Append(%v) expected %v got %v\n", key, last, v)
-				}
+				ck.Append(key, nv)
 				last = last + nv
-				v = ck.Get(key)
+				v := ck.Get(key)
 				if v != last {
 					ok = false
 					t.Fatalf("Get(%v) expected %v got %v\n", key, last, v)

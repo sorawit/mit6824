@@ -7,6 +7,15 @@ import "os"
 import "time"
 import "fmt"
 import "math/rand"
+import crand "crypto/rand"
+import "encoding/base64"
+
+func randstring(n int) string {
+	b := make([]byte, 2*n)
+	crand.Read(b)
+	s := base64.URLEncoding.EncodeToString(b)
+	return s[0:n]
+}
 
 func port(tag string, host int) string {
 	s := "/var/tmp/824-"
@@ -25,7 +34,7 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
 	for i := 0; i < len(pxa); i++ {
 		if pxa[i] != nil {
 			decided, v1 := pxa[i].Status(seq)
-			if decided {
+			if decided == Decided {
 				if count > 0 && v != v1 {
 					t.Fatalf("decided values do not match; seq=%v i=%v v=%v v1=%v",
 						seq, i, v, v1)
@@ -324,7 +333,7 @@ func TestManyForget(t *testing.T) {
 			i := (rand.Int() % npaxos)
 			if seq >= pxa[i].Min() {
 				decided, _ := pxa[i].Status(seq)
-				if decided {
+				if decided == Decided {
 					pxa[i].Done(seq)
 				}
 			}
@@ -412,6 +421,74 @@ func TestForgetMem(t *testing.T) {
 
 	if m2.Alloc > (m1.Alloc / 2) {
 		t.Fatalf("memory use did not shrink enough")
+	}
+
+	again := make([]string, 10)
+	for seq := 0; seq < npaxos && seq < 10; seq++ {
+		again[seq] = randstring(20)
+		for i := 0; i < npaxos; i++ {
+			fate, _ := pxa[i].Status(seq)
+			if fate != Forgotten {
+				t.Fatalf("seq %d < Min() %d but not Forgotten", seq, pxa[i].Min())
+			}
+			pxa[i].Start(seq, again[seq])
+		}
+	}
+	time.Sleep(1 * time.Second)
+	for seq := 0; seq < npaxos && seq < 10; seq++ {
+		for i := 0; i < npaxos; i++ {
+			fate, v := pxa[i].Status(seq)
+			if fate != Forgotten || v == again[seq] {
+				t.Fatalf("seq %d < Min() %d but not Forgotten", seq, pxa[i].Min())
+			}
+		}
+	}
+
+	fmt.Printf("  ... Passed\n")
+}
+
+//
+// does Max() work after Done()s?
+//
+func TestDoneMax(t *testing.T) {
+	runtime.GOMAXPROCS(4)
+
+	fmt.Printf("Test: Paxos Max() after Done()s ...\n")
+
+	const npaxos = 3
+	var pxa []*Paxos = make([]*Paxos, npaxos)
+	var pxh []string = make([]string, npaxos)
+	defer cleanup(pxa)
+
+	for i := 0; i < npaxos; i++ {
+		pxh[i] = port("donemax", i)
+	}
+	for i := 0; i < npaxos; i++ {
+		pxa[i] = Make(pxh, i, nil)
+	}
+
+	pxa[0].Start(0, "x")
+	waitn(t, pxa, 0, npaxos)
+
+	for i := 1; i <= 10; i++ {
+		pxa[0].Start(i, "y")
+		waitn(t, pxa, i, npaxos)
+	}
+
+	for i := 0; i < npaxos; i++ {
+		pxa[i].Done(10)
+	}
+
+	// Propagate messages so everyone knows about Done(10)
+	for i := 0; i < npaxos; i++ {
+		pxa[i].Start(10, "z")
+	}
+	time.Sleep(2 * time.Second)
+	for i := 0; i < npaxos; i++ {
+		mx := pxa[i].Max()
+		if mx != 10 {
+			t.Fatalf("Max() did not return correct result %d after calling Done(); returned %d", 10, mx)
+		}
 	}
 
 	fmt.Printf("  ... Passed\n")

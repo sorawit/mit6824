@@ -12,10 +12,8 @@ type Err string
 type PutAppendArgs struct {
 	Key   string
 	Value string
-	// You'll have to add definitions here.
-
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	IsPut bool
+	Id    int64
 }
 
 type PutAppendReply struct {
@@ -24,6 +22,7 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
+	Id  int64
 	// You'll have to add definitions here.
 }
 
@@ -32,5 +31,10 @@ type GetReply struct {
 	Value string
 }
 
+type MigrateArgs struct {
+	Storage map[string]string
+	Action  map[int64]string
+}
 
-// Your RPC definitions here.
+type MigrateReply struct {
+}

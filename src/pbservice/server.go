@@ -30,11 +30,7 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 		reply.Err = ErrWrongServer
 	} else {
 		reply.Err = OK
-		if o, ok := pb.action[args.Id]; ok {
-			reply.Value = o
-		} else {
-			reply.Value = pb.storage[args.Key]
-		}
+		reply.Value = pb.storage[args.Key]
 	}
 	pb.mu.Unlock()
 	return nil

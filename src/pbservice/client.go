@@ -3,7 +3,7 @@ package pbservice
 import "viewservice"
 import "net/rpc"
 
-//import "fmt"
+import "fmt"
 
 import "crypto/rand"
 import "math/big"
@@ -72,7 +72,7 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
-	args := &GetArgs{key, nrand()}
+	args := &GetArgs{key}
 	var reply GetReply
 	for {
 		b := call(ck.view.Primary, "PBServer.Get", args, &reply)

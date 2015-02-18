@@ -22,8 +22,6 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key string
-	Id  int64
-	// You'll have to add definitions here.
 }
 
 type GetReply struct {

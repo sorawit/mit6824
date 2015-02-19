@@ -4,6 +4,7 @@ import "viewservice"
 import "net/rpc"
 
 import "fmt"
+import "time"
 
 import "crypto/rand"
 import "math/big"
@@ -79,6 +80,7 @@ func (ck *Clerk) Get(key string) string {
 		if b && reply.Err == OK {
 			break
 		}
+		time.Sleep(viewservice.PingInterval)
 		ck.view, _ = ck.vs.Get()
 	}
 	return reply.Value
@@ -95,6 +97,7 @@ func (ck *Clerk) PutAppend(key string, value string, isPut bool) {
 		if b && reply.Err == OK {
 			break
 		}
+		time.Sleep(viewservice.PingInterval)
 		ck.view, _ = ck.vs.Get()
 	}
 }

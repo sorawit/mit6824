@@ -35,4 +35,5 @@ type MigrateArgs struct {
 }
 
 type MigrateReply struct {
+	Err Err
 }

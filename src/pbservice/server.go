@@ -58,6 +58,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 				}
 				break
 			}
+			time.Sleep(viewservice.PingInterval)
 			pb.refreshView()
 		}
 	}
@@ -90,6 +91,9 @@ func (pb *PBServer) Migrate(args *MigrateArgs, reply *MigrateReply) error {
 	if pb.view.Backup == pb.me {
 		pb.storage = args.Storage
 		pb.action = args.Action
+		reply.Err = OK
+	} else {
+		reply.Err = ErrWrongServer
 	}
 	pb.mu.Unlock()
 	return nil
@@ -100,12 +104,13 @@ func (pb *PBServer) refreshView() {
 	if v != pb.view {
 		if v.Primary == pb.me && v.Backup != "" {
 			args := &MigrateArgs{pb.storage, pb.action}
-			var reply MigrateReply
 			for {
+				var reply MigrateReply
 				ok := call(v.Backup, "PBServer.Migrate", args, &reply)
-				if ok {
+				if ok && reply.Err == OK {
 					break
 				}
+				time.Sleep(viewservice.PingInterval)
 			}
 		}
 	}

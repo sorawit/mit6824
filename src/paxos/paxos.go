@@ -30,7 +30,6 @@ import "sync"
 import "fmt"
 import "math/rand"
 
-
 // px.Status() return values, indicating
 // whether an agreement has been decided,
 // or Paxos has not yet reached agreement,
@@ -52,8 +51,51 @@ type Paxos struct {
 	peers      []string
 	me         int // index into peers[]
 
+	gen  map[int]int64
+	n_p  map[int]int64
+	n_a  map[int]int64
+	v_a  map[int]interface{}
+	dec  map[int]interface{}
+	done int
+	max  int
+	min  int
+}
 
-	// Your data here.
+type PrepareArgs struct {
+	Seq int
+	N   int64
+}
+
+type PrepareReply struct {
+	Ok bool
+	N  int64
+	V  interface{}
+}
+
+type AcceptArgs struct {
+	Seq int
+	N   int64
+	V   interface{}
+}
+
+type AcceptReply struct {
+	Ok bool
+}
+
+type DecidedArgs struct {
+	Seq int
+	V   interface{}
+}
+
+type DecidedReply struct {
+	Done int
+}
+
+type PurgeArgs struct {
+	Done int
+}
+
+type NoReply struct {
 }
 
 //
@@ -92,7 +134,6 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-
 //
 // the application wants paxos to start agreement on
 // instance seq, with proposed value v.
@@ -101,7 +142,155 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 // is reached.
 //
 func (px *Paxos) Start(seq int, v interface{}) {
-	// Your code here.
+	go px.Propose(seq, v)
+}
+
+func (px *Paxos) GenN(seq int) int64 {
+	px.mu.Lock()
+	npeers := int64(len(px.peers))
+	maxx := px.n_p[seq]
+	if maxx < px.gen[seq] {
+		maxx = px.gen[seq]
+	}
+	n := (maxx/npeers+1)*npeers + int64(px.me)
+	px.gen[seq] = n
+	px.mu.Unlock()
+	return n
+}
+
+func (px *Paxos) Propose(seq int, v interface{}) {
+	for {
+		px.mu.Lock()
+		if _, ok := px.dec[seq]; ok {
+			px.mu.Unlock()
+			break
+		}
+		px.mu.Unlock()
+		n := px.GenN(seq)
+		n_a := int64(-1)
+		v_a := v
+		i := 0
+		for idx := range px.peers {
+			peer := px.peers[idx]
+			args := PrepareArgs{seq, n}
+			reply := &PrepareReply{}
+			var success bool
+			if idx == px.me {
+				success = px.Prepare(&args, reply) == nil
+			} else {
+				success = call(peer, "Paxos.Prepare", args, reply)
+			}
+			if success && reply.Ok {
+				i = i + 1
+				if reply.N > n_a {
+					n_a = reply.N
+					v_a = reply.V
+				}
+			}
+		}
+		if i > len(px.peers)/2 {
+			ii := 0
+			for idx := range px.peers {
+				peer := px.peers[idx]
+				args := AcceptArgs{seq, n, v_a}
+				reply := &AcceptReply{}
+				var success bool
+				if idx == px.me {
+					success = px.Accept(&args, reply) == nil
+				} else {
+					success = call(peer, "Paxos.Accept", args, reply)
+				}
+				if success && reply.Ok {
+					ii = ii + 1
+				}
+			}
+			if ii > len(px.peers)/2 {
+				m := px.done
+				r := true
+				for idx := range px.peers {
+					reply := &DecidedReply{}
+					args := DecidedArgs{seq, v_a}
+					if idx == px.me {
+						r = (px.Decided(&args, reply) == nil) && r
+					} else {
+						r = call(px.peers[idx], "Paxos.Decided", args, reply) && r
+					}
+					if reply.Done < m {
+						m = reply.Done
+					}
+				}
+				if r {
+					for idx := range px.peers {
+						args := PurgeArgs{m}
+						if idx == px.me {
+							px.Purge(&args, &NoReply{})
+						} else {
+							call(px.peers[idx], "Paxos.Purge", args, &NoReply{})
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+	px.mu.Lock()
+	if args.N > px.n_p[args.Seq] {
+		px.n_p[args.Seq] = args.N
+		reply.Ok = true
+		if _, ok := px.v_a[args.Seq]; ok {
+			reply.N = px.n_a[args.Seq]
+			reply.V = px.v_a[args.Seq]
+		} else {
+			reply.N = -1
+		}
+	} else {
+		reply.Ok = false
+	}
+	px.mu.Unlock()
+	return nil
+}
+
+func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
+	px.mu.Lock()
+	if args.N >= px.n_p[args.Seq] {
+		px.n_p[args.Seq] = args.N
+		px.n_a[args.Seq] = args.N
+		px.v_a[args.Seq] = args.V
+		reply.Ok = true
+	} else {
+		reply.Ok = false
+	}
+	px.mu.Unlock()
+	return nil
+}
+
+func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
+	px.mu.Lock()
+	px.dec[args.Seq] = args.V
+	if px.max < args.Seq {
+		px.max = args.Seq
+	}
+	reply.Done = px.done
+	px.mu.Unlock()
+	return nil
+}
+
+func (px *Paxos) Purge(args *PurgeArgs, reply *NoReply) error {
+	px.mu.Lock()
+	px.min = args.Done + 1
+	for key := range px.n_p {
+		if key < px.min {
+			delete(px.n_p, key)
+			delete(px.n_a, key)
+			delete(px.v_a, key)
+			delete(px.dec, key)
+			delete(px.gen, key)
+		}
+	}
+	px.mu.Unlock()
+	return nil
 }
 
 //
@@ -111,7 +300,9 @@ func (px *Paxos) Start(seq int, v interface{}) {
 // see the comments for Min() for more explanation.
 //
 func (px *Paxos) Done(seq int) {
-	// Your code here.
+	if seq > px.done {
+		px.done = seq
+	}
 }
 
 //
@@ -120,8 +311,7 @@ func (px *Paxos) Done(seq int) {
 // this peer.
 //
 func (px *Paxos) Max() int {
-	// Your code here.
-	return 0
+	return px.max
 }
 
 //
@@ -153,8 +343,7 @@ func (px *Paxos) Max() int {
 // instances.
 //
 func (px *Paxos) Min() int {
-	// You code here.
-	return 0
+	return px.min
 }
 
 //
@@ -165,11 +354,18 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
-	// Your code here.
+	px.mu.Lock()
+	if seq <= px.done {
+		px.mu.Unlock()
+		return Forgotten, nil
+	}
+	if v, ok := px.dec[seq]; ok {
+		px.mu.Unlock()
+		return Decided, v
+	}
+	px.mu.Unlock()
 	return Pending, nil
 }
-
-
 
 //
 // tell the peer to shut itself down.
@@ -193,8 +389,14 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px.peers = peers
 	px.me = me
 
-
-	// Your initialization code here.
+	px.gen = make(map[int]int64)
+	px.n_p = make(map[int]int64)
+	px.n_a = make(map[int]int64)
+	px.v_a = make(map[int]interface{})
+	px.dec = make(map[int]interface{})
+	px.done = -1
+	px.max = 0
+	px.min = 0
 
 	if rpcs != nil {
 		// caller will create socket &c
@@ -246,7 +448,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 			}
 		}()
 	}
-
 
 	return px
 }

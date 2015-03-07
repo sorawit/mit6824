@@ -16,6 +16,7 @@ import "math/rand"
 import crand "crypto/rand"
 import "encoding/base64"
 import "path/filepath"
+import "sync/atomic"
 
 type tServer struct {
 	p       *os.Process
@@ -322,7 +323,7 @@ func Test4Move(t *testing.T) {
 		os.Remove(s.port)
 	}
 
-	count := 0
+	count := int32(0)
 	var mu sync.Mutex
 	for i := 0; i < shardmaster.NShards; i++ {
 		go func(me int) {
@@ -330,7 +331,7 @@ func Test4Move(t *testing.T) {
 			v := myck.Get(string('0' + me))
 			if v == string('0'+me) {
 				mu.Lock()
-				count++
+				atomic.AddInt32(&count, 1)
 				mu.Unlock()
 			} else {
 				t.Fatalf("Get(%v) yielded %v\n", me, v)
@@ -340,11 +341,12 @@ func Test4Move(t *testing.T) {
 
 	time.Sleep(10 * time.Second)
 
-	if count > shardmaster.NShards/3 && count < 2*(shardmaster.NShards/3) {
+	ccc := atomic.LoadInt32(&count)
+	if ccc > shardmaster.NShards/3 && ccc < 2*(shardmaster.NShards/3) {
 		fmt.Printf("  ... Passed\n")
 	} else {
 		t.Fatalf("%v keys worked after killing 1/2 of groups; wanted %v",
-			count, shardmaster.NShards/2)
+			ccc, shardmaster.NShards/2)
 	}
 }
 
@@ -510,12 +512,11 @@ func Test5BasicPersistence(t *testing.T) {
 		v := ck1.Get("a")
 		ch <- v
 	}()
-	timeout := make(chan bool)
-	go func() { time.Sleep(3 * time.Second); timeout <- true }()
+
 	select {
 	case <-ch:
 		t.Fatalf("Get should not have succeeded after killing all servers.")
-	case <-timeout:
+	case <-time.After(3 * time.Second):
 		// this is what we hope for.
 	}
 
@@ -641,7 +642,7 @@ func Test5DiskUse(t *testing.T) {
 	ck.Get(k4)
 
 	// let all the replicas tick().
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(2100 * time.Millisecond)
 
 	max := int64(20 * 1000)
 
@@ -659,7 +660,7 @@ func Test5DiskUse(t *testing.T) {
 	{
 		nb := tc.space()
 		if nb > max {
-			t.Fatalf("using too many bytes on disk (%v)", nb)
+			t.Fatalf("using too many bytes on disk (%v > %v)", nb, max)
 		}
 	}
 
@@ -681,7 +682,7 @@ func Test5DiskUse(t *testing.T) {
 	{
 		nb := tc.space()
 		if nb > max {
-			t.Fatalf("using too many bytes on disk (%v)", nb)
+			t.Fatalf("using too many bytes on disk (%v > %v)", nb, max)
 		}
 	}
 
@@ -738,7 +739,7 @@ func Test5AppendUse(t *testing.T) {
 	ck.Get(k4)
 
 	// let all the replicas tick().
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(2100 * time.Millisecond)
 
 	max := int64(3*n*1000) + 20000
 
@@ -992,14 +993,14 @@ func doConcurrentCrash(t *testing.T, unreliable bool) {
 	k1 := randstring(10)
 	ck.Put(k1, "")
 
-	stop := false
+	stop := int32(0)
 
 	ff := func(me int, ch chan int) {
 		ret := -1
 		defer func() { ch <- ret }()
 		myck := tc.clerk()
 		n := 0
-		for stop == false || n < 5 {
+		for atomic.LoadInt32(&stop) == 0 || n < 5 {
 			myck.Append(k1, "x "+strconv.Itoa(me)+" "+strconv.Itoa(n)+" y")
 			n++
 			time.Sleep(200 * time.Millisecond)
@@ -1039,7 +1040,7 @@ func doConcurrentCrash(t *testing.T, unreliable bool) {
 	}
 
 	time.Sleep(2 * time.Second)
-	stop = true
+	atomic.StoreInt32(&stop, 1)
 
 	counts := []int{}
 	for i := 0; i < ncli; i++ {
@@ -1185,12 +1186,11 @@ func Test5RejoinMix1(t *testing.T) {
 		v := ck1.Get(k1)
 		ch <- v
 	}()
-	timeout := make(chan bool)
-	go func() { time.Sleep(3 * time.Second); timeout <- true }()
+
 	select {
 	case <-ch:
 		t.Fatalf("Get should not have succeeded.")
-	case <-timeout:
+	case <-time.After(3 * time.Second):
 		// this is what we hope for.
 	}
 
@@ -1206,104 +1206,6 @@ func Test5RejoinMix1(t *testing.T) {
 	v := ck.Get(k1)
 	if v != k1v {
 		t.Fatalf("Get returned wrong value")
-	}
-
-	fmt.Printf("  ... Passed\n")
-}
-
-//
-// does a replica that loses its state continue once it has
-// seen a bare majority?
-//
-func Test5RejoinMix2(t *testing.T) {
-	tc := setup(t, "rejoinmix2", 1, 3, false)
-	defer tc.cleanup()
-
-	fmt.Printf("Test: replica continues correctly after disk loss ...\n")
-
-	tc.join(0)
-	ck := tc.clerk()
-
-	k1 := randstring(10)
-	k1v := ""
-
-	for i := 0; i < 7+(rand.Int()%7); i++ {
-		x := randstring(10)
-		ck.Append(k1, x)
-		k1v += x
-	}
-
-	time.Sleep(300 * time.Millisecond)
-	ck.Get(k1)
-
-	tc.kill1(0, 0, false)
-
-	// R1 and R2 are up.
-	for i := 0; i < 2; i++ {
-		x := randstring(10)
-		ck.Append(k1, x)
-		k1v += x
-	}
-
-	// R1 loses its disk, R0 still down.
-	tc.kill1(0, 1, true)
-
-	// R2 down.
-	tc.kill1(0, 2, false)
-
-	// R0 and R1 up.
-	tc.start1(0, 0)
-	tc.start1(0, 1)
-
-	// check that requests are not executed.
-	// R0 is up, R1 is up but lost disk,
-	// R2 is down.
-	ch := make(chan string)
-	go func() {
-		ck1 := tc.clerk()
-		v := ck1.Get(k1)
-		ch <- v
-	}()
-	timeout := make(chan bool)
-	go func() { time.Sleep(3 * time.Second); timeout <- true }()
-	select {
-	case <-ch:
-		t.Fatalf("Get should not have succeeded.")
-	case <-timeout:
-		// this is what we hope for.
-	}
-
-	// stop R0, start R2.
-	tc.kill1(0, 0, false)
-	tc.start1(0, 2)
-
-	// now R1, which had lost its disk, has had a chance
-	// to contact both R2 and R0, which preserved their disks,
-	// though it talked to them at different times.
-	// and R2 is up with an intact and up-to-date disk.
-	// at this point R1 and R2 should be willing to proceed.
-
-	{
-		x := randstring(10)
-		ck.Append(k1, x)
-		k1v += x
-		v := ck.Get(k1)
-		if v != k1v {
-			t.Fatalf("Get returned wrong value")
-		}
-	}
-
-	tc.start1(0, 0)
-
-	time.Sleep(time.Second)
-	{
-		x := randstring(10)
-		ck.Append(k1, x)
-		k1v += x
-		v := ck.Get(k1)
-		if v != k1v {
-			t.Fatalf("Get returned wrong value")
-		}
 	}
 
 	fmt.Printf("  ... Passed\n")
